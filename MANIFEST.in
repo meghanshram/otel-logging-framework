@@ -1,0 +1,5 @@
+include README.md
+include LICENCE
+include logger_config.yaml
+recursive-include otel_logger *.py
+recursive-include otel_logger *.yaml

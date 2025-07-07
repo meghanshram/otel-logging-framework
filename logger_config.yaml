@@ -1,0 +1,28 @@
+
+logger:
+  service_name: "my-service"
+  service_version: "1.0.0"
+  log_level: "DEBUG"
+  enable_console: true
+  backends:
+    # - backend_type: "filesystem"
+    #   config:
+    #     log_file: "./logs/my-service.jsonl"
+    #     max_bytes: 10485760  # 10MB
+    #     backup_count: 5
+    - backend_type: "elasticsearch"
+      config:
+        hosts: ["https://localhost:9200"]
+        index_pattern: "my-app-logs-%Y.%m.%d"
+        basic_auth: ["elastic", "Tap+g=09RtvCJjCwMdJL"]
+        ca_certs: "/home/meghanshram/http_ca.crt"
+        verify_certs: true
+        timeout: 30
+    # - backend_type: "postgres"
+    #   config:
+    #     host: "localhost"
+    #     port: 5432
+    #     database: "logs"
+    #     user: "postgres"
+    #     password: "postgres"
+    #     table_name: "otel_logs"
