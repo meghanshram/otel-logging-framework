@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "otel-logging-framework"
-version = "1.0.1"
+version = "1.0.2"
 description = "A comprehensive OpenTelemetry-compliant logging framework for Python"
 readme = "README.md"
-authors = [{ name = "Your Name", email = "your.email@example.com" }]
+authors = [{ name = "Meghanshram B V", email = "meghanshdev@gmail.com" }]
 license = { text = "MIT" }
 requires-python = ">=3.8"
 dependencies = [
-    "pyyaml>=6.0",
-    "filelock>=3.9",
+    "pyyaml>=6.0.2",
+    "filelock>=3.18.0",
     "elasticsearch==9.0.2",
-    "psycopg2-binary>=2.9",
+    "psycopg2-binary>=2.9.10",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,9 +27,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/otel-logging-framework"
-Repository = "https://github.com/yourusername/otel-logging-framework"
-Documentation = "https://github.com/yourusername/otel-logging-framework#readme"
+Homepage = "https://github.com/meghanshram/otel-logging-framework"
+Repository = "https://github.com/meghanshram/otel-logging-framework"
+Documentation = "https://github.com/meghanshram/otel-logging-framework#readme"
 
 [tool.setuptools]
 packages = ["otel_logger", "otel_logger.handlers"]

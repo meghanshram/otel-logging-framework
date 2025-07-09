@@ -1,6 +1,6 @@
 
 logger:
-  service_name: "my-service"
+  service_name: "TestService"
   service_version: "1.0.0"
   log_level: "DEBUG"
   enable_console: true
@@ -13,8 +13,8 @@ logger:
     - backend_type: "elasticsearch"
       config:
         hosts: ["https://localhost:9200"]
-        index_pattern: "my-app-logs-%Y.%m.%d"
-        basic_auth: ["elastic", "Tap+g=09RtvCJjCwMdJL"]
+        index_pattern: "testlogs-%Y.%m.%d"
+        basic_auth: ["elastic", "rqurZ2t3uU8ndsCFhIbz"]
         ca_certs: "/home/meghanshram/http_ca.crt"
         verify_certs: true
         timeout: 30

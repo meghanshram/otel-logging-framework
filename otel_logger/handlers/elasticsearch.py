@@ -87,29 +87,39 @@ class ElasticsearchBackend(LogBackendInterface):
                 raise
     
     def write_log(self, log_entry: Dict[str, Any]) -> None:
-        """Write log entry directly to Elasticsearch"""
+        """Write log entry directly to Elasticsearch with retries"""
         debug_logger.debug("Writing log to Elasticsearch: %s", log_entry)
         index_name = datetime.now().strftime(self.index_pattern)
         
-        # Add @timestamp for Elasticsearch
         es_entry = {
             "@timestamp": log_entry.get("timestamp"),
             **log_entry
         }
         
-        try:
-            response = self.es_client.index(index=index_name, body=es_entry)
-            debug_logger.debug("Log written to Elasticsearch, response: %s", response)
-        except Exception as e:
-            debug_logger.error("Failed to write to Elasticsearch: %s", e)
-            print(f"Failed to write to Elasticsearch: {e}")
-            print(json.dumps(log_entry, default=str))
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                response = self.es_client.index(index=index_name, body=es_entry)
+                debug_logger.debug("Log written to Elasticsearch, response: %s", response)
+                break
+            except (ConnectionError, TransportError, SSLError) as e:
+                debug_logger.error("Failed to write to Elasticsearch on attempt %d: %s", attempt, e)
+                if attempt == retries:
+                    debug_logger.error("Failed to write to Elasticsearch after %d attempts: %s", retries, e)
+                    print(f"Failed to write to Elasticsearch after {retries} attempts: {e}")
+                    print(json.dumps(log_entry, default=str))
+                time.sleep(2)  # Wait before retrying
+            except Exception as e:
+                debug_logger.error("Unexpected error writing to Elasticsearch: %s", e)
+                print(f"Unexpected error writing to Elasticsearch: {e}")
+                print(json.dumps(log_entry, default=str))
+                break
     
     def _create_index_template(self) -> None:
         """Create Elasticsearch index template"""
         debug_logger.debug("Creating Elasticsearch index template")
         template = {
-            "index_patterns": ["my-app-logs-*"],
+            "index_patterns": [self.index_pattern.replace("%Y.%m.%d", "*")],  # Use configured index_pattern
             "priority": 1,
             "template": {
                 "settings": {
@@ -142,9 +152,12 @@ class ElasticsearchBackend(LogBackendInterface):
         }
         
         try:
-            # Use composable template API for Elasticsearch 8.x/9.x
-            self.es_client.indices.put_index_template(name="my-app-logs-template", body=template)
-            debug_logger.info("Index template 'my-app-logs-template' created successfully")
+            # Check if template exists to avoid overwriting
+            if not self.es_client.indices.exists_index_template(name="my-app-logs-template"):
+                self.es_client.indices.put_index_template(name="my-app-logs-template", body=template)
+                debug_logger.info("Index template 'my-app-logs-template' created successfully")
+            else:
+                debug_logger.debug("Index template 'my-app-logs-template' already exists, skipping creation")
         except Exception as e:
             debug_logger.warning("Could not create index template: %s", e)
             print(f"Warning: Could not create index template: {e}")

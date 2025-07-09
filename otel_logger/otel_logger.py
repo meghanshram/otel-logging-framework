@@ -180,6 +180,11 @@ class OTELLogger:
             msg=message,
             args=(),
             exc_info=None,
+            extra={
+                "service_name": self.service_name,
+                "service_version": self.service_version,
+                "instance_id": self.instance_id
+            },
         )
 
         record.service_name = self.service_name
@@ -261,11 +266,26 @@ def read_logger_config(config_file: str = "logger_config.yaml") -> Dict[str, Any
         # Validate config structure
         if not config or "logger" not in config:
             debug_logger.error("Invalid logger config: 'logger' key missing")
-            raise ValueError("Invalid logger config: 'logger' key missing")
-        
+            return {
+                "service_name": "blueprint-framework",
+                "service_version": "1.0.0",
+                "log_level": "INFO",
+                "enable_console": True,
+                "backends": [
+                    {
+                        "backend_type": "filesystem",
+                        "config": {
+                            "log_file": f"./logs/blueprint-{datetime.now().strftime('%Y%m%d')}.jsonl",
+                            "max_bytes": 10 * 1024 * 1024,
+                            "backup_count": 5
+                        }
+                    }
+                ]
+            }
+
         logger_config = config["logger"]
-        if "backends" not in logger_config:
-            debug_logger.warning("No backends specified in config, using default Filesystem backend")
+        if not isinstance(logger_config.get("backends"), list):
+            debug_logger.warning("Invalid or missing backends in config, using default Filesystem backend")
             logger_config["backends"] = [
                 {
                     "backend_type": "filesystem",
