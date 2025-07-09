@@ -24,3 +24,5 @@ logs/
 *.swp
 *.swo
 .vscode/
+
+performace_reports

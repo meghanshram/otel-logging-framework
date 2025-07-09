@@ -8,5 +8,10 @@ from .otel_logger import (
     log_warning,
     otel_trace,
     otel_span,
-    otel_log
+    otel_log,
+    alog_debug,
+    alog_info,
+    alog_error,
+    alog_warning,
+    aotel_span
 )

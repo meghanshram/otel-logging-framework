@@ -5,15 +5,15 @@ logger:
   log_level: "DEBUG"
   enable_console: true
   backends:
-    # - backend_type: "filesystem"
-    #   config:
-    #     log_file: "./logs/my-service.jsonl"
-    #     max_bytes: 10485760  # 10MB
-    #     backup_count: 5
+    - backend_type: "filesystem"
+      config:
+        log_file: "./logs/my-service.jsonl"
+        max_bytes: 10485760  # 10MB
+        backup_count: 5
     - backend_type: "elasticsearch"
       config:
         hosts: ["https://localhost:9200"]
-        index_pattern: "testlogs-%Y.%m.%d"
+        index_pattern: "performace-%Y.%m.%d"
         basic_auth: ["elastic", "rqurZ2t3uU8ndsCFhIbz"]
         ca_certs: "/home/meghanshram/http_ca.crt"
         verify_certs: true

@@ -13,6 +13,8 @@ import yaml
 from pathlib import Path
 from .otel_types import LogBackend, LogBackendConfig, LogBackendInterface
 from .handlers.debug import debug_logger
+import asyncio
+
 
 # Thread-local storage for trace context and correlation ID
 _trace_context = threading.local()
@@ -138,7 +140,7 @@ class OTELLogger:
 
     def _initialize_backends(self, backend_configs: List[LogBackendConfig]) -> None:
         from .handlers.filesystem import FilesystemBackend
-        from .handlers.elasticsearch import ElasticsearchBackend
+        from .handlers.elasticsearch import ElasticsearchBackend  # This now supports both sync and async
         from .handlers.postgres import PostgresBackend
 
         backend_classes = {
@@ -151,10 +153,28 @@ class OTELLogger:
         for config in backend_configs:
             try:
                 debug_logger.debug("Attempting to initialize backend: %s with config: %s", 
-                                 config.backend_type.value, config.config)
+                                config.backend_type.value, config.config)
                 backend_class = backend_classes[config.backend_type]
                 backend = backend_class()
-                backend.initialize(config.config)
+                
+                # Handle async initialization
+                if hasattr(backend, 'initialize') and asyncio.iscoroutinefunction(backend.initialize):
+                    # If it's async, run it in a new event loop or existing one
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is already running, we need to handle this differently
+                            # For now, use the sync wrapper
+                            backend.initialize(config.config)
+                        else:
+                            loop.run_until_complete(backend.initialize(config.config))
+                    except RuntimeError:
+                        # No event loop, create one
+                        asyncio.run(backend.initialize(config.config))
+                else:
+                    # Sync initialization
+                    backend.initialize(config.config)
+                    
                 self.backends.append(backend)
                 debug_logger.info("Successfully initialized %s backend", config.backend_type.value)
                 print(f"Initialized {config.backend_type.value} backend")
@@ -207,9 +227,24 @@ class OTELLogger:
         log_entry_str = formatter.format(record)
         log_entry = json.loads(log_entry_str)
 
+        # Handle both sync and async backends
         for backend in self.backends:
             try:
-                backend.write_log(log_entry)
+                if hasattr(backend, 'write_log') and asyncio.iscoroutinefunction(backend.write_log):
+                    # Async backend - handle appropriately
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If we're in an async context, schedule the coroutine
+                            asyncio.create_task(backend.write_log(log_entry))
+                        else:
+                            loop.run_until_complete(backend.write_log(log_entry))
+                    except RuntimeError:
+                        # No event loop, create one for this operation
+                        asyncio.run(backend.write_log(log_entry))
+                else:
+                    # Sync backend
+                    backend.write_log(log_entry)
             except Exception as e:
                 print(f"Backend write failed: {e}")
 
@@ -231,9 +266,116 @@ class OTELLogger:
     def close(self):
         for backend in self.backends:
             try:
-                backend.close()
+                if hasattr(backend, 'close') and asyncio.iscoroutinefunction(backend.close):
+                    # Async backend close
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(backend.close())
+                        else:
+                            loop.run_until_complete(backend.close())
+                    except RuntimeError:
+                        asyncio.run(backend.close())
+                else:
+                    # Sync backend close
+                    backend.close()
             except Exception as e:
                 print(f"Error closing backend: {e}")
+
+    # Async context manager support
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.aclose()
+
+    async def aclose(self):
+        """Async version of close"""
+        for backend in self.backends:
+            try:
+                if hasattr(backend, 'close') and asyncio.iscoroutinefunction(backend.close):
+                    await backend.close()
+                else:
+                    backend.close()
+            except Exception as e:
+                print(f"Error closing backend: {e}")
+
+    # Async logging methods
+    async def alog(
+        self,
+        level: str,
+        message: str,
+        attributes: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ):
+        """Async version of _log for better performance in async contexts"""
+        record = self.logger.makeRecord(
+            name=self.logger.name,
+            level=getattr(logging, level.upper()),
+            fn="",
+            lno=0,
+            msg=message,
+            args=(),
+            exc_info=None,
+            extra={
+                "service_name": self.service_name,
+                "service_version": self.service_version,
+                "instance_id": self.instance_id
+            },
+        )
+
+        record.service_name = self.service_name
+        record.service_version = self.service_version
+        record.instance_id = self.instance_id
+
+        if attributes:
+            record.otel_attributes = attributes
+
+        if trace_id:
+            _trace_context.trace_id = trace_id
+        if span_id:
+            _trace_context.span_id = span_id
+        if correlation_id:
+            _trace_context.correlation_id = correlation_id
+
+        self.logger.handle(record)
+
+        formatter = OTELFormatter()
+        log_entry_str = formatter.format(record)
+        log_entry = json.loads(log_entry_str)
+
+        # Handle backends asynchronously
+        tasks = []
+        for backend in self.backends:
+            try:
+                if hasattr(backend, 'write_log') and asyncio.iscoroutinefunction(backend.write_log):
+                    tasks.append(backend.write_log(log_entry))
+                else:
+                    # Run sync backend in executor
+                    loop = asyncio.get_event_loop()
+                    tasks.append(loop.run_in_executor(None, backend.write_log, log_entry))
+            except Exception as e:
+                print(f"Backend write failed: {e}")
+        
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def ainfo(self, message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+        await self.alog("INFO", message, attributes, correlation_id=correlation_id, **kwargs)
+
+    async def aerror(self, message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+        await self.alog("ERROR", message, attributes, correlation_id=correlation_id, **kwargs)
+
+    async def adebug(self, message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+        await self.alog("DEBUG", message, attributes, correlation_id=correlation_id, **kwargs)
+
+    async def awarning(self, message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+        await self.alog("WARNING", message, attributes, correlation_id=correlation_id, **kwargs)
+
+    async def acritical(self, message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+        await self.alog("CRITICAL", message, attributes, correlation_id=correlation_id, **kwargs)
 
 def read_logger_config(config_file: str = "logger_config.yaml") -> Dict[str, Any]:
     """Read logger configuration from a YAML file"""
@@ -574,6 +716,35 @@ def log_warning(message: str, attributes: Optional[Dict[str, Any]] = None, corre
         attributes.update(kwargs)
     otel_logger.warning(message, attributes, correlation_id=correlation_id)
 
+# Async helper functions
+async def alog_info(message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+    if attributes is None:
+        attributes = kwargs
+    else:
+        attributes.update(kwargs)
+    await otel_logger.ainfo(message, attributes, correlation_id=correlation_id)
+
+async def alog_error(message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+    if attributes is None:
+        attributes = kwargs
+    else:
+        attributes.update(kwargs)
+    await otel_logger.aerror(message, attributes, correlation_id=correlation_id)
+
+async def alog_debug(message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+    if attributes is None:
+        attributes = kwargs
+    else:
+        attributes.update(kwargs)
+    await otel_logger.adebug(message, attributes, correlation_id=correlation_id)
+
+async def alog_warning(message: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None, **kwargs):
+    if attributes is None:
+        attributes = kwargs
+    else:
+        attributes.update(kwargs)
+    await otel_logger.awarning(message, attributes, correlation_id=correlation_id)
+
 class otel_span:
     def __init__(
         self, operation_name: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None
@@ -648,6 +819,81 @@ class otel_span:
         if hasattr(_trace_context, "correlation_id"):
             delattr(_trace_context, "correlation_id")
 
+# Async span context manager
+class aotel_span:
+    def __init__(
+        self, operation_name: str, attributes: Optional[Dict[str, Any]] = None, correlation_id: Optional[str] = None
+    ):
+        self.operation_name = operation_name
+        self.attributes = attributes or {}
+        self.correlation_id = correlation_id or str(uuid.uuid4()).replace("-", "")
+        self.trace_id = None
+        self.span_id = None
+        self.start_time = None
+
+    async def __aenter__(self):
+        self.trace_id = str(uuid.uuid4()).replace("-", "")
+        self.span_id = str(uuid.uuid4()).replace("-", "")[:16]
+        self.start_time = time.time()
+
+        _trace_context.trace_id = self.trace_id
+        _trace_context.span_id = self.span_id
+        _trace_context.correlation_id = self.correlation_id
+
+        await otel_logger.ainfo(
+            f"Starting span: {self.operation_name}",
+            attributes={
+                **self.attributes,
+                "span.start_time": self.start_time,
+                "operation.name": self.operation_name,
+            },
+            trace_id=self.trace_id,
+            span_id=self.span_id,
+            correlation_id=self.correlation_id,
+        )
+
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+
+        if exc_type is None:
+            await otel_logger.ainfo(
+                f"Completed span: {self.operation_name}",
+                attributes={
+                    **self.attributes,
+                    "span.duration_ms": round(duration * 1000, 2),
+                    "span.status": "success",
+                    "operation.name": self.operation_name,
+                },
+                trace_id=self.trace_id,
+                span_id=self.span_id,
+                correlation_id=self.correlation_id,
+            )
+        else:
+            await otel_logger.aerror(
+                f"Span failed: {self.operation_name}",
+                attributes={
+                    **self.attributes,
+                    "span.duration_ms": round(duration * 1000, 2),
+                    "span.status": "error",
+                    "operation.name": self.operation_name,
+                    "error.type": exc_type.__name__,
+                    "error.message": str(exc_val),
+                    "error.stack": traceback.format_exc(),
+                },
+                trace_id=self.trace_id,
+                span_id=self.span_id,
+                correlation_id=self.correlation_id,
+            )
+
+        if hasattr(_trace_context, "trace_id"):
+            delattr(_trace_context, "trace_id")
+        if hasattr(_trace_context, "span_id"):
+            delattr(_trace_context, "span_id")
+        if hasattr(_trace_context, "correlation_id"):
+            delattr(_trace_context, "correlation_id")
+
 if __name__ == "__main__":
     # Test with config file
     print("=== Testing Logger with Config File ===")
@@ -672,6 +918,7 @@ if __name__ == "__main__":
     def process_data(data: list) -> dict:
         return {"processed": len(data), "data": data}
 
+    # Test sync functions
     result1 = calculate_something(5, 3, "add")
     print(f"Result 1: {result1}")
 
@@ -691,6 +938,26 @@ if __name__ == "__main__":
     log_info("Info message", {"info_data": "test"}, correlation_id="req-005")
     log_warning("Warning message", {"warning_type": "test"}, correlation_id="req-006")
     log_error("Error message", {"error_code": "TEST001"}, correlation_id="req-007")
+
+    # Test async functions
+    async def test_async():
+        print("\n=== Testing Async Logger ===")
+        
+        async with aotel_span("async.data.processing", {"batch_size": 200}, correlation_id="req-008"):
+            await asyncio.sleep(0.1)
+            await alog_info("Async processing batch", batch_id="async_batch_001", size=200, correlation_id="req-008")
+
+        await alog_debug("Async debug message", {"debug_info": "async_test"}, correlation_id="req-009")
+        await alog_info("Async info message", {"info_data": "async_test"}, correlation_id="req-010")
+        await alog_warning("Async warning message", {"warning_type": "async_test"}, correlation_id="req-011")
+        await alog_error("Async error message", {"error_code": "ASYNC_TEST001"}, correlation_id="req-012")
+
+        # Test async context manager
+        async with logger:
+            await alog_info("Using async context manager", correlation_id="req-013")
+
+    # Run async tests
+    asyncio.run(test_async())
 
     print("Testing completed! Check your configured backends for logs.")
     
